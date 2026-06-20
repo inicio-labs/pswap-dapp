@@ -1,120 +1,51 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useWallet, Transaction } from "@miden-sdk/miden-wallet-adapter";
-import { fetchTokens, rateFrom, type TokenMeta } from "../lib/priceService";
-import {
-  buildPswapCreateRequest,
-  faucetIdToHex,
-  type Balance,
-} from "../lib/midenClient";
+import { rateFrom, type TokenMeta } from "../lib/priceService";
+import { buildPswapCreateRequest } from "../lib/midenClient";
+import { useAssets } from "../lib/useAssets";
 import { toBaseUnits, fromBaseUnits } from "../lib/tokens";
+import { avatarGradient, monogram, usd } from "../lib/ui";
 
-type Stage = "idle" | "pricing" | "building" | "signing" | "done" | "error";
+type Stage = "idle" | "building" | "signing" | "done" | "error";
 
-const usd = (n: number) =>
-  `$${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
-
-export function CreatePswap({ creatorAddress }: { creatorAddress: string }) {
-  const { requestTransaction, requestAssets } = useWallet() as unknown as {
+export function CreatePswap({
+  creatorAddress,
+  onCreated,
+}: {
+  creatorAddress: string;
+  onCreated?: () => void;
+}) {
+  const { requestTransaction } = useWallet() as unknown as {
     requestTransaction: (tx: unknown) => Promise<string>;
-    requestAssets?: () => Promise<Array<{ faucetId: string; amount: string }>>;
   };
-
-  const [tokens, setTokens] = useState<TokenMeta[]>([]);
-  const [balances, setBalances] = useState<Balance[]>([]);
-  const [loadingAssets, setLoadingAssets] = useState(true);
+  const { tokens, balances, loading, error: assetError, reload } = useAssets();
 
   const [offeredFaucet, setOfferedFaucet] = useState("");
   const [requestedFaucet, setRequestedFaucet] = useState("");
   const [payAmount, setPayAmount] = useState("");
   const [noteType, setNoteType] = useState<"private" | "public">("private");
 
-  const [rate, setRate] = useState<number | null>(null);
-  const [rateStale, setRateStale] = useState(false);
   const [stage, setStage] = useState<Stage>("idle");
   const [txId, setTxId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Assets come straight from the connected wallet (`requestAssets()`), priced
-  // via the API. This is the wallet's own holdings — including private assets a
-  // read-only node client could never see — and needs the `AllowedPrivateData`
-  // grant configured on the WalletProvider (see main.tsx).
-  useEffect(() => {
-    let live = true;
-    (async () => {
-      setLoadingAssets(true);
-      try {
-        if (!requestAssets) throw new Error("wallet does not expose requestAssets()");
-        const walletAssets = await requestAssets();
-        if (!live) return;
-        // The wallet returns bech32 faucet ids; the price API is keyed by hex.
-        // Canonicalize to hex so balances, the picker, pricing, and the build
-        // request all use one consistent id.
-        const bals: Balance[] = await Promise.all(
-          walletAssets.map(async (a) => ({
-            faucetId: await faucetIdToHex(a.faucetId),
-            amount: BigInt(a.amount),
-          }))
-        );
-        if (!live) return;
-        console.info(
-          `requestAssets(): ${bals.length} asset(s)`,
-          bals.map((b) => `${b.faucetId}=${b.amount}`)
-        );
-        setBalances(bals);
-        const metas = await fetchTokens(bals.map((b) => b.faucetId));
-        if (live) {
-          setTokens(metas);
-          if (metas.length < bals.length) {
-            console.warn(
-              `price API priced ${metas.length}/${bals.length} wallet asset(s);` +
-                " unpriced faucets are hidden from the picker."
-            );
-          }
-        }
-      } catch (e) {
-        if (live) setError(String((e as Error)?.message ?? e));
-      } finally {
-        if (live) setLoadingAssets(false);
-      }
-    })();
-    return () => {
-      live = false;
-    };
-  }, [creatorAddress, requestAssets]);
+  // You can only OFFER assets you actually hold; you can RECEIVE any supported.
+  const offerable = useMemo(
+    () => tokens.filter((t) => (balances.get(t.faucetId) ?? 0n) > 0n),
+    [tokens, balances]
+  );
 
   const payTok = tokens.find((t) => t.faucetId === offeredFaucet);
   const getTok = tokens.find((t) => t.faucetId === requestedFaucet);
 
-  // Live price for the selected pair → rate (receive per 1 pay).
-  useEffect(() => {
-    if (!offeredFaucet || !requestedFaucet || offeredFaucet === requestedFaucet) {
-      setRate(null);
-      return;
-    }
-    let live = true;
-    setStage("pricing");
-    fetchTokens([offeredFaucet, requestedFaucet])
-      .then((pair) => {
-        if (!live) return;
-        const o = pair.find((t) => t.faucetId === offeredFaucet);
-        const r = pair.find((t) => t.faucetId === requestedFaucet);
-        if (!o || !r) throw new Error("price API returned no price for the pair");
-        setRate(rateFrom(o, r));
-        setRateStale(o.stale || r.stale);
-        setStage("idle");
-      })
-      .catch((e) => {
-        if (!live) return;
-        setError(String(e?.message ?? e));
-        setStage("error");
-      });
-    return () => {
-      live = false;
-    };
-  }, [offeredFaucet, requestedFaucet]);
+  // Rate (receive per 1 pay) straight from the priced metadata — no extra call.
+  const rate =
+    payTok && getTok && payTok.faucetId !== getTok.faucetId
+      ? rateFrom(payTok, getTok)
+      : null;
+  const rateStale = (payTok?.stale || getTok?.stale) ?? false;
 
   const payNum = Number(payAmount);
-  // receive = pay × rate, at the receive token's decimals (fair-value delta).
   const receiveAmount = useMemo(() => {
     if (!rate || !getTok || !Number.isFinite(payNum) || payNum <= 0) return "";
     return (payNum * rate).toFixed(getTok.decimals);
@@ -123,17 +54,16 @@ export function CreatePswap({ creatorAddress }: { creatorAddress: string }) {
   const payUsd = payTok && payNum > 0 ? payNum * payTok.priceUsd : 0;
   const getUsd = getTok && receiveAmount ? Number(receiveAmount) * getTok.priceUsd : 0;
 
-  const payBalance = (() => {
+  const payBalance = useMemo(() => {
     if (!payTok) return null;
-    const b = balances.find(
-      (x) => x.faucetId.toLowerCase() === offeredFaucet.toLowerCase()
-    );
-    return b ? fromBaseUnits(b.amount, payTok.decimals) : "0";
-  })();
+    const units = balances.get(payTok.faucetId);
+    return units != null ? fromBaseUnits(units, payTok.decimals) : "0";
+  }, [payTok, balances]);
 
   const overBalance =
-    payBalance !== null && payNum > 0 && payNum > Number(payBalance);
+    payBalance != null && payNum > 0 && payNum > Number(payBalance);
 
+  const busy = stage === "building" || stage === "signing";
   const canSubmit =
     !!payTok &&
     !!getTok &&
@@ -141,9 +71,12 @@ export function CreatePswap({ creatorAddress }: { creatorAddress: string }) {
     payNum > 0 &&
     !overBalance &&
     !!rate &&
-    (stage === "idle" || stage === "done" || stage === "error");
+    !busy;
 
   function flip() {
+    // Only flip into pay if we actually hold the requested asset.
+    const canPayRequested = (balances.get(requestedFaucet) ?? 0n) > 0n;
+    if (!canPayRequested) return;
     setOfferedFaucet(requestedFaucet);
     setRequestedFaucet(offeredFaucet);
     setPayAmount(receiveAmount || "");
@@ -163,30 +96,54 @@ export function CreatePswap({ creatorAddress }: { creatorAddress: string }) {
         requestedAmount: toBaseUnits(receiveAmount, getTok.decimals),
         noteType,
       });
-      const tx = (Transaction as unknown as {
-        createCustomTransaction: (a: string, r: string, req: unknown) => unknown;
-      }).createCustomTransaction(creatorAddress, creatorAddress, request);
+      const tx = (
+        Transaction as unknown as {
+          createCustomTransaction: (a: string, r: string, req: unknown) => unknown;
+        }
+      ).createCustomTransaction(creatorAddress, creatorAddress, request);
       setStage("signing");
       setTxId(await requestTransaction(tx));
       setStage("done");
+      setPayAmount("");
+      onCreated?.();
     } catch (e: unknown) {
       setError(String((e as Error)?.message ?? e));
       setStage("error");
     }
   }
 
-  if (loadingAssets) {
-    return <div className="card muted">Reading your wallet assets…</div>;
+  // ── loading / empty universe ──────────────────────────────────────────
+  if (loading && tokens.length === 0) {
+    return (
+      <div className="card swap">
+        <div className="skel line" style={{ width: "40%", height: 18 }} />
+        <div className="skel" style={{ height: 92, marginTop: 14, borderRadius: 16 }} />
+        <div className="skel" style={{ height: 92, marginTop: 10, borderRadius: 16 }} />
+      </div>
+    );
   }
+
   if (tokens.length === 0) {
     return (
-      <div className="card warn">
-        <strong>No tradable assets in this wallet.</strong>
-        <p>
-          This account holds no fungible assets the price API recognizes. Receive
-          or mint at least two priced devnet tokens to create a swap.
-        </p>
-        {error && <div className="status err">✕ {error}</div>}
+      <div className="card swap">
+        <div className="empty">
+          <div className="em-icon">⚠</div>
+          <div className="em-title">No priced assets available</div>
+          <p>
+            The price API returned no supported assets and your wallet holds none
+            it recognizes. Check <code>VITE_SUPPORTED_FAUCETS</code> or mint a
+            priced devnet token.
+          </p>
+          {assetError && (
+            <div className="status err" style={{ marginTop: 12 }}>
+              <span>✕</span>
+              <span>{assetError}</span>
+            </div>
+          )}
+          <button className="btn ghost sm" style={{ marginTop: 12 }} onClick={reload}>
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
@@ -202,114 +159,140 @@ export function CreatePswap({ creatorAddress }: { creatorAddress: string }) {
           : overBalance
             ? "Insufficient balance"
             : stage === "building"
-              ? "Building…"
+              ? "Building order…"
               : stage === "signing"
                 ? "Confirm in wallet…"
                 : "Create swap";
 
   return (
     <div className="card swap">
-      <Panel
-        label="You pay"
-        tokens={tokens}
-        token={offeredFaucet}
-        onToken={setOfferedFaucet}
-        amount={payAmount}
-        onAmount={setPayAmount}
-        editable
-        usd={payUsd}
-        balance={payBalance}
-        onMax={payBalance ? () => setPayAmount(payBalance) : undefined}
-        over={overBalance}
-      />
-
-      <div className="flip-row">
-        <button className="flip" onClick={flip} title="Switch direction">
-          ⇅
-        </button>
+      <div className="swap-head">
+        <h1>Create swap</h1>
+        <span className="hint">priced live · partial fills allowed</span>
       </div>
 
-      <Panel
-        label="You receive"
-        tokens={tokens}
-        token={requestedFaucet}
-        onToken={setRequestedFaucet}
-        amount={stage === "pricing" ? "…" : receiveAmount}
-        onAmount={() => {}}
-        editable={false}
-        usd={getUsd}
-      />
+      <div className="fields">
+        <Field
+          label="You pay"
+          options={offerable}
+          token={offeredFaucet}
+          onToken={setOfferedFaucet}
+          amount={payAmount}
+          onAmount={setPayAmount}
+          editable
+          usdValue={payUsd}
+          balance={payBalance}
+          onMax={payBalance ? () => setPayAmount(payBalance) : undefined}
+          over={overBalance}
+          emptyHint="No holdings"
+        />
 
-      {payTok && getTok && offeredFaucet !== requestedFaucet && (
-        <div className="rate">
-          {rate ? (
-            <>
-              1 {payTok.ticker} = {rate.toPrecision(6)} {getTok.ticker}
-              <span className="rate-sub">
-                {usd(payTok.priceUsd)} / {usd(getTok.priceUsd)}
-                {rateStale ? " · stale" : ""}
-              </span>
-            </>
-          ) : (
-            "fetching price…"
-          )}
+        <div className="flip-wrap">
+          <button className="flip" onClick={flip} title="Switch direction" aria-label="switch">
+            ↓
+          </button>
+        </div>
+
+        <Field
+          label="You receive"
+          options={tokens}
+          token={requestedFaucet}
+          onToken={setRequestedFaucet}
+          amount={stage === "building" || stage === "signing" ? receiveAmount : receiveAmount}
+          onAmount={() => {}}
+          editable={false}
+          usdValue={getUsd}
+        />
+      </div>
+
+      {payTok && getTok && offeredFaucet !== requestedFaucet && rate && (
+        <div className="rate-row">
+          <span className="r-main">
+            1 {payTok.ticker} = {trim(rate)} {getTok.ticker}
+          </span>
+          <span className="r-sub">
+            {usd(payTok.priceUsd)} / {usd(getTok.priceUsd)}
+            {rateStale ? " · stale" : ""}
+          </span>
         </div>
       )}
 
-      <label className="note-type">
-        Note visibility
-        <select
-          value={noteType}
-          onChange={(e) => setNoteType(e.target.value as "private" | "public")}
-        >
-          <option value="private">Private</option>
-          <option value="public">Public</option>
-        </select>
-      </label>
+      <div className="note-toggle">
+        <span className="lbl">Note visibility</span>
+        <div className="seg">
+          <button
+            className={noteType === "private" ? "on" : ""}
+            onClick={() => setNoteType("private")}
+          >
+            Private
+          </button>
+          <button
+            className={noteType === "public" ? "on" : ""}
+            onClick={() => setNoteType("public")}
+          >
+            Public
+          </button>
+        </div>
+      </div>
 
-      <button className="primary" disabled={!canSubmit} onClick={onCreate}>
+      <button className="btn-primary" disabled={!canSubmit} onClick={onCreate}>
+        {busy && <span className="spinner" style={{ marginRight: 8, display: "inline-block", verticalAlign: "-2px" }} />}
         {cta}
       </button>
 
       {stage === "done" && txId && (
         <div className="status ok">
-          ✓ Swap created. Tx: <code>{txId}</code>
+          <span>✓</span>
+          <span>
+            Swap created. Tx: <code>{txId}</code>
+          </span>
         </div>
       )}
-      {stage === "error" && error && <div className="status err">✕ {error}</div>}
+      {stage === "error" && error && (
+        <div className="status err">
+          <span>✕</span>
+          <span>{error}</span>
+        </div>
+      )}
     </div>
   );
 }
 
-function Panel(props: {
+function trim(n: number): string {
+  return Number(n.toPrecision(6)).toString();
+}
+
+function Field(props: {
   label: string;
-  tokens: TokenMeta[];
+  options: TokenMeta[];
   token: string;
   onToken: (v: string) => void;
   amount: string;
   onAmount: (v: string) => void;
   editable: boolean;
-  usd: number;
+  usdValue: number;
   balance?: string | null;
   onMax?: () => void;
   over?: boolean;
+  emptyHint?: string;
 }) {
+  const sel = props.options.find((t) => t.faucetId === props.token);
   return (
-    <div className={`panel${props.over ? " panel-over" : ""}`}>
-      <div className="panel-top">
+    <div className={`field${props.over ? " over" : ""}`}>
+      <div className="field-top">
         <span>{props.label}</span>
         {props.balance != null && (
-          <span className="panel-bal">
+          <span className="field-bal">
             Balance: {props.balance}
             {props.onMax && (
-              <button className="max" onClick={props.onMax}>
+              <button className="chip-max" onClick={props.onMax}>
                 MAX
               </button>
             )}
           </span>
         )}
       </div>
-      <div className="panel-mid">
+      <div className="field-mid">
         <input
           className="amount"
           inputMode="decimal"
@@ -318,20 +301,27 @@ function Panel(props: {
           readOnly={!props.editable}
           onChange={(e) => props.onAmount(e.target.value)}
         />
-        <select
-          className="token-pill"
-          value={props.token}
-          onChange={(e) => props.onToken(e.target.value)}
-        >
-          <option value="">Select</option>
-          {props.tokens.map((t) => (
-            <option key={t.faucetId} value={t.faucetId}>
-              {t.ticker}
-            </option>
-          ))}
-        </select>
+        <label className={`token${sel ? "" : " empty"}`}>
+          {sel ? (
+            <span className="avatar" style={{ background: avatarGradient(sel.ticker) }}>
+              {monogram(sel.ticker)}
+            </span>
+          ) : (
+            <span className="avatar placeholder">◎</span>
+          )}
+          <span>{sel ? sel.ticker : props.options.length ? "Select" : props.emptyHint || "—"}</span>
+          <span className="caret">▾</span>
+          <select value={props.token} onChange={(e) => props.onToken(e.target.value)}>
+            <option value="">Select</option>
+            {props.options.map((t) => (
+              <option key={t.faucetId} value={t.faucetId}>
+                {t.ticker}
+              </option>
+            ))}
+          </select>
+        </label>
       </div>
-      <div className="panel-usd">{props.usd > 0 ? usd(props.usd) : " "}</div>
+      <div className="field-usd">{props.usdValue > 0 ? usd(props.usdValue) : " "}</div>
     </div>
   );
 }

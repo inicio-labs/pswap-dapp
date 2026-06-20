@@ -38,16 +38,37 @@ export function WalletDebug() {
         return;
       }
       const r = await w.requestAssets();
-      // Also dump the raw provider value for shape inspection.
+      // Enumerate the raw provider's methods — including the prototype chain —
+      // so we can see whether the wallet exposes any PSWAP / order / lineage
+      // call the adapter doesn't wrap.
       const win = window as unknown as { miden?: any; midenWallet?: any };
       const provider = win.midenWallet || win.miden;
-      console.info("requestAssets RAW:", r, "provider:", provider);
+      const methods = new Set<string>();
+      let o = provider;
+      while (o && o !== Object.prototype) {
+        for (const k of Object.getOwnPropertyNames(o)) {
+          try {
+            if (typeof provider[k] === "function") methods.add(k);
+          } catch {
+            /* getter threw — ignore */
+          }
+        }
+        o = Object.getPrototypeOf(o);
+      }
+      const methodList = [...methods].sort();
+      const pswapish = methodList.filter((m) =>
+        /pswap|lineage|order|swap/i.test(m)
+      );
+      console.info("provider methods:", methodList, "provider:", provider);
       setProbe(
-        JSON.stringify(
-          r,
-          (_k, v) => (typeof v === "bigint" ? v.toString() : v),
-          1
-        )
+        "assets: " +
+          JSON.stringify(r, (_k, v) => (typeof v === "bigint" ? v.toString() : v)) +
+          "\n\nprovider methods (" +
+          methodList.length +
+          "):\n" +
+          methodList.join(", ") +
+          "\n\nPSWAP/order-ish methods: " +
+          (pswapish.length ? pswapish.join(", ") : "— NONE —")
       );
     } catch (e) {
       setProbe("ERROR: " + String((e as Error)?.message ?? e));
@@ -78,7 +99,7 @@ export function WalletDebug() {
           </li>
         ))}
       </ul>
-      <button className="ghost" onClick={probeAssets}>
+      <button className="btn ghost sm" onClick={probeAssets}>
         probe requestAssets()
       </button>
       <pre

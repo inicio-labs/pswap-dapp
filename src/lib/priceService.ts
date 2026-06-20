@@ -9,10 +9,7 @@
 // The API is keyed by faucet id and returns USD price + ticker + decimals, so
 // it doubles as our token-metadata source — no manual symbol/decimals registry.
 
-const BASE = (
-  (import.meta.env.VITE_PRICE_API_URL as string) ||
-  "https://35-175-40-181.sslip.io"
-).replace(/\/+$/, "");
+import { PRICE_API_URL as BASE } from "./config";
 
 export interface TokenMeta {
   faucetId: string;

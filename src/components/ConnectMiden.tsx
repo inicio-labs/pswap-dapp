@@ -30,7 +30,7 @@ export function ConnectMiden() {
 
   if (connected) {
     return (
-      <button className="ghost" onClick={() => disconnect()}>
+      <button className="btn ghost sm" onClick={() => disconnect()}>
         Disconnect
       </button>
     );
@@ -39,7 +39,7 @@ export function ConnectMiden() {
   return (
     <div style={{ display: "grid", gap: 8, justifyItems: "center" }}>
       <button
-        className="primary"
+        className="btn ghost sm"
         disabled={arming || connecting}
         onClick={() => {
           setErr(null);
@@ -47,9 +47,14 @@ export function ConnectMiden() {
           select("Miden Wallet"); // MidenWalletName
         }}
       >
-        {arming || connecting ? "Connecting…" : "Connect Miden Wallet (direct)"}
+        {arming || connecting ? "Connecting…" : "Connect directly (devnet)"}
       </button>
-      {err && <div className="status err">✕ {err}</div>}
+      {err && (
+        <div className="status err">
+          <span>✕</span>
+          <span>{err}</span>
+        </div>
+      )}
     </div>
   );
 }

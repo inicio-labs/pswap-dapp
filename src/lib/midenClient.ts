@@ -138,11 +138,17 @@ export async function listLineages(
     );
   }
 
-  // (a) Track the connected (public) account so sync discovers its orders.
+  const accountId = toAccountId(creatorAddress);
+
+  // (a) Track the connected (public) account so sync can subscribe to its PSWAP
+  // tag and reconstruct lineages from chain. `getOrImport` pulls public account
+  // state from the network when it isn't already in this client's store —
+  // `import({accountId})` is NOT a valid input shape (it's AccountRef|file|seed),
+  // which is why tracking previously failed silently.
   try {
-    await client.accounts?.import?.({ accountId: toAccountId(creatorAddress) });
-  } catch {
-    // Already tracked, or not importable this way — sync still runs below.
+    await client.accounts.getOrImport(accountId);
+  } catch (err) {
+    console.warn("listLineages: getOrImport failed (account may be private):", err);
   }
   // (b) Sync: the PSWAP observer reconstructs/advances lineages from chain.
   try {
@@ -152,6 +158,9 @@ export async function listLineages(
   }
 
   const records: any[] = await client.pswap.lineages();
+  console.info(
+    `listLineages(${creatorAddress}): pswap.lineages() returned ${records.length} record(s)`
+  );
   const views = records.map((r): LineageView => ({
     orderId: r.orderId(),
     state: stateName(Number(r.state())),
