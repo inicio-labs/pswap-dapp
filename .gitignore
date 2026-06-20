@@ -1,0 +1,19 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+*.tsbuildinfo
+
+# local env (only .env.example is committed)
+.env
+.env.local
+.env.*.local
+
+# editor / OS / local tooling
+.DS_Store
+*.log
+.claude/
+
+# local SDK tarballs (built from web-sdk, see README prerequisites)
+*.tgz
