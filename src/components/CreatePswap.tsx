@@ -23,7 +23,8 @@ export function CreatePswap({
   const [offeredFaucet, setOfferedFaucet] = useState("");
   const [requestedFaucet, setRequestedFaucet] = useState("");
   const [payAmount, setPayAmount] = useState("");
-  const [noteType, setNoteType] = useState<"private" | "public">("private");
+  // Orders are created as public notes. (Private-note option removed.)
+  const noteType = "public" as const;
 
   const [stage, setStage] = useState<Stage>("idle");
   const [txId, setTxId] = useState<string | null>(null);
@@ -216,24 +217,6 @@ export function CreatePswap({
           </span>
         </div>
       )}
-
-      <div className="note-toggle">
-        <span className="lbl">Note visibility</span>
-        <div className="seg">
-          <button
-            className={noteType === "private" ? "on" : ""}
-            onClick={() => setNoteType("private")}
-          >
-            Private
-          </button>
-          <button
-            className={noteType === "public" ? "on" : ""}
-            onClick={() => setNoteType("public")}
-          >
-            Public
-          </button>
-        </div>
-      </div>
 
       <button className="btn-primary" disabled={!canSubmit} onClick={onCreate}>
         {busy && <span className="spinner" style={{ marginRight: 8, display: "inline-block", verticalAlign: "-2px" }} />}
